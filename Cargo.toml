@@ -1,0 +1,13 @@
+[package]
+name = "ememdb_rs"
+authors = ["devPharmacist at The Around"]
+description = "A simple in-memory database for TheAround inhouse use"
+youtube = "https://www.youtube.com/channel/UCxvzyEDKmyIcbZbjgtxX6mw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dashmap = "5.3.0"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+regex = "1.5.4"
