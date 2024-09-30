@@ -3,7 +3,8 @@ use ememdb_rs::InMemoryDB;
 
 fn main() {
     // 데이터베이스 생성 시 이름과 전역 TTL 설정
-    let db = InMemoryDB::new("my_in_memory_db", Some(10)); // 기본 TTL은 10초
+    // let db = InMemoryDB::new("my_in_memory_db", Some(10)); // 기본 TTL은 10초
+    let db = InMemoryDB::new("my_in_memory_db", None); // 기본 TTL 없음
 
     // 컬렉션 생성
     db.create_collection("users");

@@ -3,6 +3,7 @@ name = "ememdb_rs"
 authors = ["devPharmacist at The Around"]
 description = "A simple in-memory database for TheAround inhouse use"
 youtube = "https://www.youtube.com/channel/UCxvzyEDKmyIcbZbjgtxX6mw"
+repository = "https://github.com/devatthearound/ememdb_rs"
 version = "0.1.0"
 edition = "2021"
 
