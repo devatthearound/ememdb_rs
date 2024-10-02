@@ -10,5 +10,6 @@ edition = "2021"
 [dependencies]
 dashmap = "5.3.0"
 serde_json = "1.0"
+uuid = { version = "1.10.0", features = ["v4"] }
 serde = { version = "1.0", features = ["derive"] }
 regex = "1.5.4"
