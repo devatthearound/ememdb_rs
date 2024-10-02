@@ -6,11 +6,11 @@ tomlCopy[dependencies]
 ememdb_rs = "0.1.0"
 사용법
 메모리 데이터베이스 생성
-rustCopyuse ememdb_rs::{InMemoryDB, TTL};
+ememdb_rs::{InMemoryDB, TTL};
 
 let db = InMemoryDB::new("my_database", TTL::NoTTL);
 컬렉션 생성
-rustCopyuse ememdb_rs::KeyType;
+ememdb_rs::KeyType;
 
 let users = db.create::<serde_json::Value>()
     .name("users")
@@ -19,7 +19,7 @@ let users = db.create::<serde_json::Value>()
     .unique_keys(vec!["email"])
     .build();
 데이터 삽입 (Insert)
-rustCopyuse serde_json::json;
+serde_json::json;
 
 let user = json!({
     "user_id": "1",
@@ -85,7 +85,7 @@ match result {
 }
 예제
 사용자 관리 시스템
-rustCopyuse ememdb_rs::{InMemoryDB, TTL, KeyType};
+ememdb_rs::{InMemoryDB, TTL, KeyType};
 use serde_json::json;
 
 fn main() {
