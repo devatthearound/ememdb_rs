@@ -1,18 +1,87 @@
 use serde_json::{Value, json};
 use std::convert::Into;
 use crate::db::Collection;
+use std::collections::HashMap;
 // Query builder for chainable query operations
 type Filter<'a> = Box<dyn Fn(&Value) -> bool + 'a>;
 pub type QueryResult = Result<Vec<Value>, String>;
 pub type SuccessCallback = Box<dyn Fn(&Vec<Value>)>;
 pub type ErrorCallback = Box<dyn Fn(&String)>;
 
+pub struct JoinBuilder<'a> {
+    collection: Collection,
+    filters: Vec<Filter<'a>>,
+    selected_fields: Vec<String>,
+    join_key: String,
+    map_function: Option<Box<dyn Fn(Value) -> Value + 'a>>,
+}
+
+impl<'a> JoinBuilder<'a> {
+    pub fn new(collection: Collection) -> Self {
+        JoinBuilder {
+            collection,
+            filters: vec![],
+            selected_fields: vec![],
+            join_key: String::new(),
+            map_function: None,
+        }
+    }
+
+    pub fn select(mut self, fields: &str) -> Self {
+        self.selected_fields = fields.split(',').map(|s| s.trim().to_string()).collect();
+        self
+    }
+
+    pub fn eq(mut self, key: &'a str, value: &'a str) -> Self {
+        self.filters.push(Box::new(move |doc| {
+            doc.get(key).map_or(false, |v| v == value)
+        }));
+        self
+    }
+
+    pub fn map<F>(mut self, f: F) -> Self
+    where
+        F: Fn(Value) -> Value + 'a,
+    {
+        self.map_function = Some(Box::new(f));
+        self
+    }
+
+    pub fn execute(self) -> Vec<Value> {
+        let mut results = vec![];
+        for doc in self.collection.documents.iter() {
+            let doc_value = &doc.value().value;
+            if self.filters.iter().all(|filter| filter(doc_value)) {
+                let mut result = if self.selected_fields.is_empty() {
+                    doc_value.clone()
+                } else {
+                    let mut selected = json!({});
+                    for field in &self.selected_fields {
+                        if let Some(value) = doc_value.get(field) {
+                            selected[field] = value.clone();
+                        }
+                    }
+                    selected
+                };
+
+                if let Some(map_fn) = &self.map_function {
+                    result = map_fn(result);
+                }
+
+                results.push(result);
+            }
+        }
+        results
+    }
+}
+
 pub struct QueryBuilder<'a> {
     collection: &'a Collection,
     filters: Vec<Filter<'a>>,
-    selected_fields: Vec<&'a str>,
+    selected_fields: Vec<String>,
     success_callback: Option<SuccessCallback>,
     error_callback: Option<ErrorCallback>,
+    joins: Vec<(String, Box<dyn Fn(&Value) -> Vec<Value> + 'a>)>,
 }
 
 impl<'a> QueryBuilder<'a> {
@@ -23,13 +92,14 @@ impl<'a> QueryBuilder<'a> {
             selected_fields: vec![],
             success_callback: None,
             error_callback: None,
+            joins: vec![],
         }
     }
 
 
     // fileds is vector of strings
     pub fn select(mut self, fields: Vec<&'a str>) -> Self {
-        self.selected_fields = fields;    
+        self.selected_fields = fields.into_iter().map(|s| s.to_string()).collect();
         self
     }
     pub fn in_(mut self, key: &'a str, values: Vec<Value>) -> Self {
@@ -232,54 +302,48 @@ impl<'a> QueryBuilder<'a> {
         self.filters.push(Box::new(filter));
         self
     }
-
- 
-    pub fn execute(self) -> QueryResult {
+    pub fn join<F>(mut self, join_key: &'a str, join_builder: F) -> Self
+    where
+        F: Fn(Collection) -> JoinBuilder<'a> + 'a,
+    {
+        let join_function = Box::new(move |doc: &Value| {
+            if let Some(other_collection) = self.collection.db.get(join_key) {
+                let join_builder = join_builder(other_collection);
+                join_builder.execute()
+            } else {
+                vec![]
+            }
+        });
+        self.joins.push((join_key.to_string(), join_function));
+        self
+    }
+    
+    pub fn execute(self) -> Result<Vec<Value>, String> {
         let mut results = vec![];
 
         for doc in self.collection.documents.iter() {
-            let doc_value = &doc.value().value;
+            let mut doc_value = doc.value().value.clone();
 
-            let mut is_match = true;
-            for filter in &self.filters {
-                if !filter(doc_value) {
-                    is_match = false;
-                    break;
+            if self.filters.iter().all(|filter| filter(&doc_value)) {
+                for (join_key, join_function) in &self.joins {
+                    let joined_docs = join_function(&doc_value);
+                    doc_value[join_key] = Value::Array(joined_docs);
                 }
-            }
 
-            if is_match {
-                let fields = &self.selected_fields;
-                let mut selected_doc = json!({});
-                if fields.is_empty()  {
-                    results.push(doc_value.clone());
-                    continue;
-                } else {
-                    for field in fields {
+                if !self.selected_fields.is_empty() {
+                    let mut selected_doc = json!({});
+                    for field in &self.selected_fields {
                         if let Some(value) = doc_value.get(field) {
                             selected_doc[field] = value.clone();
                         }
                     }
+                    doc_value = selected_doc;
                 }
-                results.push(selected_doc);
+
+                results.push(doc_value);
             }
         }
 
-        let result = Ok(results);
-
-        match &result {
-            Ok(data) => {
-                if let Some(ref success_cb) = self.success_callback {
-                    success_cb(data);
-                }
-            }
-            Err(error) => {
-                if let Some(ref error_cb) = self.error_callback {
-                    error_cb(error);
-                }
-            }
-        }
-
-        result
+        Ok(results)
     }
 }
