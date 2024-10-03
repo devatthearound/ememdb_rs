@@ -43,7 +43,7 @@ fn main() -> Result<(), String> {
     println!("{:?}", result);
 
     println!("\n5. 나이가 25에서 32 사이인 사용자:");
-    let result = users.select("*").gte("age", 25).lte("age", 32).execute();
+    let result = users.select("").gte("age", 25).lte("age", 32).execute();
     println!("{:?}", result);
 
     println!("\n6. 점수가 80 초과이고 이름과 나이만 선택:");

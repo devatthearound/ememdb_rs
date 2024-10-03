@@ -26,16 +26,15 @@ pub enum OperationResult {
 #[derive(Debug, Clone)]
 pub struct InMemoryDB {
     pub name: String,
-    pub collections: Arc<DashMap<String, Collection>>,
+    pub collections: DashMap<String, Collection>,
     pub default_ttl: TTL,
 }
-
 
 impl InMemoryDB {
     pub fn new(name: &str, default_ttl: TTL) -> Self {
         InMemoryDB {
             name: name.to_string(),
-            collections: DashMap::new().into(),
+            collections: DashMap::new(),
             default_ttl,
         }
     }
@@ -54,39 +53,82 @@ pub struct DocumentEntry {
     pub value: Value,
     pub expiration: Option<SystemTime>, // None means no TTL
 }
+
+impl DocumentEntry {
+    pub fn new(value: Value, expiration: Option<SystemTime>) -> Self {
+        DocumentEntry {
+            value,
+            expiration,
+        }
+    }
+
+    pub fn set(&mut self, value: Value) {
+       self.value = value;
+    }
+
+    pub fn update (&mut self, value: Value) {
+     // update specific fields in value
+        let mut new_value = self.value.clone();
+        for (key, val) in value.as_object().unwrap() {
+            new_value[key] = val.clone();
+        }
+        self.value = new_value;
+    }
+}
+
+//  create struct DashMap<String, DocumentEntry>
+pub struct Document {
+    pub documents: DashMap<String, DocumentEntry>,
+} 
+
+impl Document {
+    pub fn new(pkey:&str, documents:Vec<DocumentEntry>) -> Self {
+        let mut new_documents = DashMap::new();
+        for doc in documents {
+            new_documents.insert(pkey.to_string(), doc);
+        }
+
+        Document {
+            documents: new_documents,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Collection {
     pub documents: DashMap<String, DocumentEntry>,
     pub key_field: Option<String>,
     pub key_type: KeyType,
     pub unique_keys: Vec<String>,
-    pub next_id: u64,
-    pub db: Arc<InMemoryDB>, // 새로 추가된 필드
+    pub next_id: Arc<std::sync::atomic::AtomicU64>,
+    pub db_name: String,
+    pub collection_name: String,
 }
 
 impl Collection {
-    pub fn new(db: Arc<InMemoryDB>, key_field: Option<String>, key_type: KeyType, unique_keys: Vec<String>) -> Self {
+    pub fn new(db_name: String, collection_name:String, key_field: Option<String>, key_type: KeyType, unique_keys: Vec<String>) -> Self {
         Collection {
             documents: DashMap::new(),
             key_field,
             key_type,
             unique_keys,
-            next_id: 0,
-            db,
+            next_id: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            db_name,
+            collection_name,
         }
     }
 
     // Insert supporting single and multiple objects
    // Handle insert logic <div class="title">2024년도 강동구약사회 연수교육 조회서비스</div>
-   pub fn insert(&mut self, mut document: Value, ttl: Option<TTL>) -> Result<OperationResult, String> {
+   pub fn insert(&self, mut document: serde_json::Value, ttl: Option<TTL>) -> Result<OperationResult, String> {
 
     let key_field = self.key_field.as_ref().ok_or("Key field is not set.")?;
 
     // 키 생성
     let doc_id = match self.key_type {
         KeyType::Increment => {
-            self.next_id += 1;
-            self.next_id.to_string()
+            let doc_id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst).to_string();
+            doc_id
         }
         KeyType::UUID => Uuid::new_v4().to_string(),
         KeyType::String | KeyType::Custom => {
@@ -102,6 +144,7 @@ impl Collection {
     if matches!(self.key_type, KeyType::Increment | KeyType::UUID) {
         document[key_field] = json!(doc_id.clone());
     }
+
 
     // TTL 처리
     let expiration = match ttl {
@@ -125,7 +168,7 @@ impl Collection {
             id: doc_id,
             document,
         })
-}
+        }
     // Update supporting single and multiple objects
     pub fn upsert(&mut self, document: Value, ttl: Option<TTL>) -> Result<OperationResult, String> {
         let key_field = self.key_field.as_ref().ok_or("Key field is not set.")?;
@@ -196,9 +239,14 @@ impl Collection {
         if fields == "*" || fields.is_empty() || fields == " "  {
             QueryBuilder::new(self).select(vec![])
         } else {
-            let fields_vec = fields.split(",").map(|s| s.trim()).collect();
+            let fields_vec: Vec<String> = fields.split(",").map(|s| s.to_string()).collect();
             QueryBuilder::new(self).select(fields_vec)
         }
+    }
+
+    pub fn reset_documents(&mut self, documents: Document) {
+        self.documents.clear();
+        self.documents = documents.documents;
     }
 }
 
@@ -249,13 +297,13 @@ impl<'a, T> CollectionBuilder<T> {
     // Build the collection
     pub fn build(self) -> Collection {
         let db_arc = Arc::clone(&self.db);
-        let collection = Collection::new(
-            Arc::clone(&db_arc),
+        
+       Collection::new(
+            db_arc.name.clone(),
+            self.name,
             self.key_field,
             self.key_type,
             self.unique_keys
-        );
-        db_arc.collections.insert(self.name.clone(), collection.clone());
-        collection
+        )
     }
 }

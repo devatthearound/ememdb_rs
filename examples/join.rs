@@ -1,79 +1,73 @@
-use ememdb_rs::{InMemoryDB, TTL, KeyType};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
+use ememdb_rs::{InMemoryDB, Collection, TTL, KeyType, QueryBuilder, JoinBuilder};
 
-fn main() -> Result<(), String> {
-    // 인메모리 데이터베이스 생성
-    let db = Arc::new(InMemoryDB::new("example_db", TTL::NoTTL));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 데이터베이스 초기화
+    let db = Arc::new(InMemoryDB::new("sample_db", TTL::NoTTL));
 
     // 사용자 컬렉션 생성
-    let users = db.create::<Value>()
+    let users_collection = db.create::<String>()
         .name("users")
-        .key("user_id")
-        .key_type(KeyType::String)
+        .key("id")
+        .key_type(KeyType::UUID)
+        .unique_keys(vec!["email"])
         .build();
 
     // 주문 컬렉션 생성
-    let orders = db.create::<Value>()
+    let orders_collection = db.create::<String>()
         .name("orders")
-        .key("order_id")
-        .key_type(KeyType::String)
+        .key("id")
+        .key_type(KeyType::UUID)
         .build();
 
-    // 샘플 데이터 삽입
-    users.insert(json!({
-        "user_id": "1",
+    // 사용자 데이터 삽입
+    users_collection.insert(json!({
         "name": "Alice",
+        "email": "alice@example.com",
         "age": 30
     }), None)?;
 
-    users.insert(json!({
-        "user_id": "2",
+    users_collection.insert(json!({
         "name": "Bob",
+        "email": "bob@example.com",
         "age": 25
     }), None)?;
 
-    orders.insert(json!({
-        "order_id": "101",
-        "user_id": "1",
+    // 주문 데이터 삽입
+    orders_collection.insert(json!({
+        "user_email": "alice@example.com",
         "product": "Laptop",
         "amount": 1000
     }), None)?;
 
-    orders.insert(json!({
-        "order_id": "102",
-        "user_id": "1",
-        "product": "Mouse",
-        "amount": 25
+    orders_collection.insert(json!({
+        "user_email": "bob@example.com",
+        "product": "Phone",
+        "amount": 500
     }), None)?;
 
-    orders.insert(json!({
-        "order_id": "103",
-        "user_id": "2",
-        "product": "Keyboard",
-        "amount": 50
+    orders_collection.insert(json!({
+        "user_email": "alice@example.com",
+        "product": "Headphones",
+        "amount": 100
     }), None)?;
 
-    // Join 쿼리 실행
-    let result = users.select("name,age")
-    .join("orders", |orders| {
-        orders.select("").eq("user_id", "users.user_id")
-    })
-    .execute()?;
+    // JOIN 작업 수행
+    let join_result = users_collection
+        .select("*")
+        .eq("name", "Alice")
+        // .join("email", "user_email", &orders_collection, |src, target| {
+        //     println!("Joining {} with {}", src.collection_name, target.db_name);
+        //     JoinBuilder::new(src, target)
+        //         .select("product,amount")
+        //         .on("email", "user_email")
+        // })
+        .execute()?;
 
-    // 결과 출력
-    for user in result {
-        println!("User: {} (Age: {})", user["name"], user["age"]);
-        if let Some(orders) = user["orders"].as_array() {
-            for order in orders {
-                println!("  Order ID: {}", order["order_id"]);
-                println!("  Product: {}", order["product"]);
-                println!("  Original Amount: ${:.2}", order["amount"]);
-                println!("  Discounted Amount: ${:.2}", order["discounted_amount"]);
-                println!();
-            }
-        }
-        println!("------------------------");
+    println!("JOIN Result:");
+    for user_with_orders in join_result {
+        println!("{:#?}", user_with_orders);
     }
 
     Ok(())
