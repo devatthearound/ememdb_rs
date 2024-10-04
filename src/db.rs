@@ -46,6 +46,10 @@ impl InMemoryDB {
     pub fn get(&self, name: &str) -> Option<Collection> {
         self.collections.get(name).map(|c| c.clone())
     }
+
+    pub fn collection_names(&self) -> Vec<String> {
+        self.collections.iter().map(|r| r.key().clone()).collect()
+    }
 }
 
 #[derive(Debug, Clone)]
