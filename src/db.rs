@@ -255,16 +255,16 @@ impl Collection {
 }
 
 
-pub struct CollectionBuilder<T> {
-    db: Arc<InMemoryDB>,
+pub struct CollectionBuilder<'a, T> {
+    db: &'a InMemoryDB,
     name: String,
     key_field: Option<String>,
     key_type: KeyType,
     unique_keys: Vec<String>,
     _marker: std::marker::PhantomData<T>,
 }
-impl<'a, T> CollectionBuilder<T> {
-    pub fn new(db: Arc<InMemoryDB>) -> Self {
+impl<'a, T> CollectionBuilder<'a, T> {
+    pub fn new(db: &'a InMemoryDB) -> Self {
         CollectionBuilder {
             db,
             name: String::new(),
@@ -301,7 +301,6 @@ impl<'a, T> CollectionBuilder<T> {
     // Build the collection
     pub fn build(self) -> Collection {
         // let db_arc = Arc::clone(&self.db);
-        
       let new_collection =  Collection::new(
             self.db.name.clone(),
             self.name.clone(),
@@ -309,7 +308,6 @@ impl<'a, T> CollectionBuilder<T> {
             self.key_type,
             self.unique_keys
         );
-    
     self.db.collections.insert(self.name.clone(), new_collection.clone());
     new_collection
     }
