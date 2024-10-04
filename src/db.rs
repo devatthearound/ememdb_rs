@@ -300,14 +300,17 @@ impl<'a, T> CollectionBuilder<T> {
 
     // Build the collection
     pub fn build(self) -> Collection {
-        let db_arc = Arc::clone(&self.db);
+        // let db_arc = Arc::clone(&self.db);
         
-       Collection::new(
-            db_arc.name.clone(),
-            self.name,
+      let new_collection =  Collection::new(
+            self.db.name.clone(),
+            self.name.clone(),
             self.key_field,
             self.key_type,
             self.unique_keys
-        )
+        );
+    
+    self.db.collections.insert(self.name.clone(), new_collection.clone());
+    new_collection
     }
 }
