@@ -40,7 +40,7 @@ impl InMemoryDB {
     }
 
     pub fn create<T: 'static>(&self) -> CollectionBuilder<T> {
-        CollectionBuilder::new(Arc::new((*self).clone()))
+        CollectionBuilder::new(self)
     }
 
     pub fn get(&self, name: &str) -> Option<Collection> {
