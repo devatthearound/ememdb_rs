@@ -23,9 +23,16 @@ fn main() {
         .key("user_id")
         .key_type(KeyType::String)
         .build()   ;     // Insert a document with a Global TTL of 60 seconds
-        
+    collection.insert(json!({
+        "user_id": "1",
+        "email": "asdf@adf.com"})
+        , Some(TTL::GlobalTTL(60)));
+
     println!("Collection: {:?}", collection);
-    println!("db: {:?}", db);
+    println!("insert result: {:?}",collection.select("*").execute());
+    println!("db: {:?}", db.get("users"));
+    let users_collection = db.get("users").unwrap();
+    println!("users_collection: {:?}", users_collection.select("*").execute());
 
     // Delete a document
     

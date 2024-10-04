@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use serde_json::{Value, json};
 use uuid::Uuid;
-use std::{sync::Arc, time::{Duration, SystemTime}};
+use std::{sync::{Arc, RwLock}, time::{Duration, SystemTime}};
 use crate::config::{TTL, KeyType};
 use crate::query::QueryBuilder;
 // use crate::query::Query;
@@ -23,32 +23,39 @@ pub enum OperationResult {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InMemoryDB {
-    pub name: String,
-    pub collections: DashMap<String, Collection>,
-    pub default_ttl: TTL,
+    name: String,
+    collections: RwLock<DashMap<String, Arc<Collection>>>,
+    default_ttl: TTL,
 }
 
-impl InMemoryDB {
+impl  InMemoryDB {
     pub fn new(name: &str, default_ttl: TTL) -> Self {
         InMemoryDB {
             name: name.to_string(),
-            collections: DashMap::new(),
+            collections: DashMap::new().into(),
             default_ttl,
         }
     }
-
-    pub fn create<T: 'static>(&self) -> CollectionBuilder<T> {
-        CollectionBuilder::new(self)
+    fn clone(&self) -> Self {
+        InMemoryDB {
+            name: self.name.clone(),
+            collections: RwLock::new(self.collections.read().unwrap().clone()),
+            default_ttl: self.default_ttl.clone(),
+        }
     }
+        pub fn create<T: 'static>(&self) -> CollectionBuilder<T> {
+            CollectionBuilder::new(self)
+        }
 
-    pub fn get(&self, name: &str) -> Option<Collection> {
-        self.collections.get(name).map(|c| c.clone())
-    }
+    pub fn get(&self, name: &str) -> Result<Collection, String> {
+        let arc_collection = self.collections.read().unwrap().get(name).unwrap().value().clone();
+        Ok((*arc_collection).clone())
+        }
 
     pub fn collection_names(&self) -> Vec<String> {
-        self.collections.iter().map(|r| r.key().clone()).collect()
+        self.collections.read().unwrap().iter().map(|r| r.key().clone()).collect()
     }
 }
 
@@ -100,6 +107,7 @@ impl Document {
 
 #[derive(Debug, Clone)]
 pub struct Collection {
+    pub parent_db: Arc<InMemoryDB>,
     pub documents: DashMap<String, DocumentEntry>,
     pub key_field: Option<String>,
     pub key_type: KeyType,
@@ -108,10 +116,17 @@ pub struct Collection {
     pub db_name: String,
     pub collection_name: String,
 }
-
 impl Collection {
-    pub fn new(db_name: String, collection_name:String, key_field: Option<String>, key_type: KeyType, unique_keys: Vec<String>) -> Self {
+    pub fn new(
+        parent_db: Arc<InMemoryDB>,
+        db_name: String,
+        collection_name: String,
+        key_field: Option<String>,
+        key_type: KeyType,
+        unique_keys: Vec<String>
+    ) -> Self {
         Collection {
+            parent_db,
             documents: DashMap::new(),
             key_field,
             key_type,
@@ -121,6 +136,8 @@ impl Collection {
             collection_name,
         }
     }
+
+
 
     // Insert supporting single and multiple objects
    // Handle insert logic <div class="title">2024년도 강동구약사회 연수교육 조회서비스</div>
@@ -149,7 +166,6 @@ impl Collection {
         document[key_field] = json!(doc_id.clone());
     }
 
-
     // TTL 처리
     let expiration = match ttl {
         Some(TTL::GlobalTTL(seconds)) | Some(TTL::CustomTTL(seconds)) => 
@@ -168,10 +184,14 @@ impl Collection {
 
     // 문서를 컬렉션에 삽입
       self.documents.insert(doc_id.clone(), DocumentEntry { value: document.clone(), expiration });
+     
+
+
         Ok(OperationResult::Inserted {
             id: doc_id,
             document,
         })
+
         }
     // Update supporting single and multiple objects
     pub fn upsert(&mut self, document: Value, ttl: Option<TTL>) -> Result<OperationResult, String> {
@@ -194,8 +214,8 @@ impl Collection {
                 Some(TTL::NoTTL) | None => None,
             };
     
-            self.documents.insert(doc_id.to_string(), DocumentEntry { value: document.clone(), expiration });
-    
+            // self.documents.insert(doc_id.to_string(), DocumentEntry { value: document.clone(), expiration });
+            self.parent_db.collections.read().unwrap().get(&self.collection_name).unwrap().documents.insert(doc_id.to_string(), DocumentEntry { value: document.clone(), expiration });
             Ok(OperationResult::Updated {
                 id: doc_id.to_string(),
                 old_document,
@@ -203,7 +223,8 @@ impl Collection {
             })
         } else {
             // 문서가 존재하지 않으면 새로 삽입
-            self.insert(document, ttl)
+            // self.insert(document, ttl)
+            self.parent_db.collections.read().unwrap().get(&self.collection_name).unwrap().insert(document, ttl)
         }
     }
     pub fn update(&mut self, document: Value) -> Result<OperationResult, String> {
@@ -238,13 +259,12 @@ impl Collection {
     }
 
     // Select chainable operations for building queries
-  
-    pub fn select<'a>(&'a self, fields: &'a str) -> QueryBuilder<'a> {
+    pub fn select(&self, fields: &str) -> QueryBuilder {
         if fields == "*" || fields.is_empty() || fields == " "  {
-            QueryBuilder::new(self).select(vec![])
+            QueryBuilder::new(Arc::new(self.clone())).select(vec![])
         } else {
             let fields_vec: Vec<String> = fields.split(",").map(|s| s.to_string()).collect();
-            QueryBuilder::new(self).select(fields_vec)
+            QueryBuilder::new(Arc::new(self.clone())).select(fields_vec)
         }
     }
 
@@ -265,15 +285,15 @@ pub struct CollectionBuilder<'a, T> {
 }
 impl<'a, T> CollectionBuilder<'a, T> {
     pub fn new(db: &'a InMemoryDB) -> Self {
-        CollectionBuilder {
-            db,
-            name: String::new(),
-            key_field: None,
-            key_type: KeyType::UUID,
-            unique_keys: Vec::new(),
-            _marker: std::marker::PhantomData,
+            CollectionBuilder {
+                db: &db,
+                name: String::new(),
+                key_field: None,
+                key_type: KeyType::UUID,
+                unique_keys: Vec::new(),
+                _marker: std::marker::PhantomData,
+            }
         }
-    }
 
     pub fn name(mut self, name: &str) -> Self {
         self.name = name.to_string();
@@ -299,16 +319,23 @@ impl<'a, T> CollectionBuilder<'a, T> {
         }
 
     // Build the collection
-    pub fn build(self) -> Collection {
-        // let db_arc = Arc::clone(&self.db);
-      let new_collection =  Collection::new(
-            self.db.name.clone(),
-            self.name.clone(),
-            self.key_field,
-            self.key_type,
-            self.unique_keys
-        );
-    self.db.collections.insert(self.name.clone(), new_collection.clone());
-    new_collection
-    }
+    pub fn build(self) -> Arc<Collection> {
+     
+    let new_db = Arc::from(self.db.clone());
+    
+    let new_collection = Collection::new(
+        new_db.clone(),
+        self.db.name.clone(),
+        self.name.clone(),
+        self.key_field,
+        self.key_type,
+        self.unique_keys
+    );
+    let collection_arc = Arc::new(new_collection.clone());
+    
+    new_db.collections.write().unwrap().insert(self.name.clone(), collection_arc.clone());
+
+    collection_arc
+
+}
 }

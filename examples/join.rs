@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let join_result = users_collection
         .select("*")
         .eq("name", "Alice")
-        // .join("email", "user_email", &orders_collection, |src, target| {
+        // .join("email", "user_email", &)orders_collection, |src, target| {
         //     println!("Joining {} with {}", src.collection_name, target.db_name);
         //     JoinBuilder::new(src, target)
         //         .select("product,amount")

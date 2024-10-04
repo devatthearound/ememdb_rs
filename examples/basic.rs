@@ -1,62 +1,64 @@
-use serde_json::{Value, json};
-use ememdb_rs::{InMemoryDB, TTL, KeyType, CollectionConfig, OperationResult};
+use ememdb_rs::{InMemoryDB, Collection, TTL, KeyType, OperationResult};
+use serde_json::{json, Value};
+use std::sync::Arc;
 
-fn main() -> Result<(), String> {
-    // Create an InMemoryDB instance
-    let db = InMemoryDB::new("test_db", TTL::NoTTL);
+fn main()  {
+    // 1. InMemoryDB 인스턴스 생성 및 Arc로 감싸기
+    let db = Arc::new(InMemoryDB::new("test_db", TTL::NoTTL));
 
-    // Create a collection with configuration
-    let collection_config = CollectionConfig::new()
-        .key("user_id")
-        .key_type(KeyType::String)
-        .unique_keys(vec!["email"])
-        .not_null(vec!["user_id", "email", "name"])
-        .field_types(vec![
-            ("user_id", "string"),
-            ("email", "string"),
-            ("name", "string"),
-        ])
-        .ttl(TTL::GlobalTTL(3600)); // Default TTL for the collection
-    println!("Collection Config: {:?}", collection_config);
-    let mut collection = db.create::<Value>()
+    // 2. 컬렉션 생성
+    let users_collection: Arc<Collection> = db.create::<Value>()
         .name("users")
         .key("user_id")
         .key_type(KeyType::String)
-        .build()   ;     // Insert a document with a Global TTL of 60 seconds
+        .build().into();
 
+    // 3. 문서 삽입
     let user_data = json!({
-        "user_id": "1234",
-        "email": "alice@example.com",
-        "name": "Alice"
+        "user_id": "1001",
+        "name": "John Doe",
+        "email": "john.doe@example.com",
+        "age": 30
     });
-    match collection.insert(user_data.clone(), Some(TTL::GlobalTTL(60)))? {
-        OperationResult::Inserted { id, document } => {
-            println!("Inserted document with id: {}, document: {:?}", id, document);
+
+    match users_collection.insert(user_data, Some(TTL::CustomTTL(3600))) {
+        Ok(result) => {
+            match result {
+                OperationResult::Inserted { id, document } => {
+                    println!("Document inserted successfully with ID: {}", id);
+                    println!("Inserted document: {:?}", document);
+                },
+                _ => unreachable!("Unexpected result from insert operation"),
+            }
         },
-        _ => unreachable!(),
+        Err(e) => {
+            println!("Error inserting document: {}", e);
+        }
     }
 
-    // Update a document
-    let updated_data = json!({
-        "user_id": "1234",
-        "email": "alice.new@example.com",
-        "name": "Alice Updated"
-    });
-    match collection.update(updated_data)? {
-        OperationResult::Updated { id, old_document, new_document } => {
-            println!("Updated document with id: {}", id);
-            println!("Old document: {:?}", old_document);
-            println!("New document: {:?}", new_document);
+    // 4. 삽입된 데이터 확인
+    let query_result = users_collection.select("*").execute();
+    match query_result {
+        Ok(documents) => {
+            println!("All documents in the collection:");
+            for doc in documents {
+                println!("{:?}", doc);
+            }
         },
-        _ => unreachable!(),
+        Err(e) => {
+            println!("Error querying documents: {}", e);
+        }
     }
-
-    // Delete a document
-    match collection.delete("5678")? {
-        OperationResult::Deleted { id, document } => {
-            println!("Deleted document with id: {}, document: {:?}", id, document);
-        },
-        _ => unreachable!(),
-    }
-    Ok(())
+    println!("db: {:?}", db);
+    // let get_collection = db.get(
+    // "users");
+    // // 5. 컬렉션 조회
+    // match get_collection {
+    //     Ok(collection) => {
+    //         println!("Collection retrieved successfully: {:?}", collection);
+    //     },
+    //     Err(_) => {
+    //         println!("Error retrieving collection");
+    //     }
+    // }
 }

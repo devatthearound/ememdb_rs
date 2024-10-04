@@ -1,27 +1,28 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
-use std::convert::Into;
-use crate::db::{Collection};
+use std::{convert::Into, sync::Arc};
+use crate::db::Collection;
 use std::collections::HashMap;
 use crate::db::DocumentEntry;
 use dashmap::DashMap;
-// Query builder for chainable query operations
-type Filter<'a> = Box<dyn Fn(&Value) -> bool + 'a>;
+
+type Filter = Box<dyn Fn(&Value) -> bool + Send + Sync>;
 pub type QueryResult = Result<Vec<Value>, String>;
-pub type SuccessCallback = Box<dyn Fn(&Vec<Value>)>;
-pub type ErrorCallback = Box<dyn Fn(&String)>;
-pub struct JoinBuilder<'a> {
-    src_collection: &'a Collection,
-    target_collection: &'a Collection,
+pub type SuccessCallback = Box<dyn Fn(&Vec<Value>) + Send + Sync>;
+pub type ErrorCallback = Box<dyn Fn(&String) + Send + Sync>;
+
+pub struct JoinBuilder {
+    src_collection: Arc<Collection>,
+    target_collection: Arc<Collection>,
     src_key: String,
     target_key: String,
-    filters: Vec<Filter<'a>>,
+    filters: Vec<Filter>,
     selected_fields: Vec<String>,
-    map_function: Option<Box<dyn Fn(Value) -> Value + 'a>>,
+    map_function: Option<Box<dyn Fn(Value) -> Value + Send + Sync>>,
 }
 
-impl<'a> JoinBuilder<'a> {
-    pub fn new(src_collection: &'a Collection, target_collection: &'a Collection) -> Self {
+impl JoinBuilder {
+    pub fn new(src_collection: Arc<Collection>, target_collection: Arc<Collection>) -> Self {
         JoinBuilder {
             src_collection,
             target_collection,
@@ -50,7 +51,7 @@ impl<'a> JoinBuilder<'a> {
 
     pub fn filter<F>(mut self, filter: F) -> Self
     where
-        F: Fn(&Value) -> bool + 'a,
+        F: Fn(&Value) -> bool + Send + Sync + 'static,
     {
         self.filters.push(Box::new(filter));
         self
@@ -58,54 +59,12 @@ impl<'a> JoinBuilder<'a> {
 
     pub fn map<F>(mut self, f: F) -> Self
     where
-        F: Fn(Value) -> Value + 'a,
+        F: Fn(Value) -> Value + Send + Sync + 'static,
     {
         self.map_function = Some(Box::new(f));
         self
     }
 
-    // pub fn execute(self) -> Vec<Value> {
-    //     let src_docs = self.src_collection.select("*").execute().unwrap();
-    //     let target_docs = self.target_collection.select("*").execute().unwrap();
-    //     let mut results = Vec::new();
-
-    //     for src_doc in src_docs {
-    //         if let Some(src_value) = src_doc.get(&self.src_key) {
-    //             let mut matched = false;
-    //             for target_doc in target_docs.iter() {
-    //                 if let Some(target_value) = target_doc.get(&self.target_key) {
-    //                     if src_value == target_value {
-    //                         matched = true;
-    //                         let mut joined_doc = src_doc.clone();
-    //                         for (key, value) in target_doc.as_object().unwrap() {
-    //                             if !self.selected_fields.is_empty() && !self.selected_fields.contains(key) {
-    //                                 continue;
-    //                             }
-    //                             // Add prefix to avoid field name conflicts
-    //                             joined_doc[format!("joined_{}", key)] = value.clone();
-    //                         }
-
-    //                         if self.filters.iter().all(|filter| filter(&joined_doc)) {
-    //                             if let Some(map_fn) = &self.map_function {
-    //                                 joined_doc = map_fn(joined_doc);
-    //                             }
-    //                             results.push(joined_doc);
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //             // If no match found, include the source document with null joined fields
-    //             if !matched {
-    //                 let mut joined_doc = src_doc.clone();
-    //                 for field in &self.selected_fields {
-    //                     joined_doc[format!("joined_{}", field)] = Value::Null;
-    //                 }
-    //                 results.push(joined_doc);
-    //             }
-    //         }
-    //     }
-    //     results
-    // }
     pub fn execute(self) -> Vec<Value> {
         let src_docs = self.src_collection.select("*").execute().unwrap();
         let mut results = Vec::new();
@@ -114,9 +73,10 @@ impl<'a> JoinBuilder<'a> {
             let mut joined_doc = src_doc.clone();
     
             if let Some(src_value) = src_doc.get(&self.src_key) {
-                let target_docs = self.target_collection
-                    .select("*")
-                    .eq(&self.target_key, src_value.to_string().as_str())
+                let src_value_str = src_value.to_string();
+                let mut query = self.target_collection.select("*");
+                let target_docs = query
+                    .eq(&self.target_key, src_value_str) // Remove the & before src_value_str
                     .execute()
                     .unwrap();
     
@@ -127,7 +87,6 @@ impl<'a> JoinBuilder<'a> {
                         }
                     }
                 } else {
-                    // If no match found, set joined fields to null
                     for field in &self.selected_fields {
                         joined_doc[format!("joined_{}", field)] = Value::Null;
                     }
@@ -146,18 +105,17 @@ impl<'a> JoinBuilder<'a> {
     }
 }
 
-pub struct QueryBuilder<'a> {
-    collection: &'a Collection,
-    filters: Vec<Filter<'a>>,
+pub struct QueryBuilder {
+    collection: Arc<Collection>,
+    filters: Vec<Filter>,
     selected_fields: Vec<String>,
     success_callback: Option<SuccessCallback>,
     error_callback: Option<ErrorCallback>,
-    joins: Vec<(String, String, &'a Collection, &'a Collection, Box<dyn Fn(String, String, Collection, &Collection, Filter) -> Vec<Value> + 'a>)>,
+    joins: Vec<(String, String, Arc<Collection>, Arc<Collection>, Box<dyn Fn(String, String, Arc<Collection>, Arc<Collection>, Filter) -> Vec<Value> + Send + Sync>)>,
 }
 
-
-impl<'a> QueryBuilder<'a> {
-    pub fn new(collection: &'a Collection) -> Self {
+impl QueryBuilder {
+    pub fn new(collection: Arc<Collection>) -> Self {
         QueryBuilder {
             collection,
             filters: vec![],
@@ -168,16 +126,16 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
-    // fileds is vector of strings
-    pub fn select(mut self, fields:Vec<String>) -> Self {
+    pub fn select(mut self, fields: Vec<String>) -> Self {
         self.selected_fields = fields;
         self
     }
 
-
-    pub fn in_(mut self, key: &'a str, values: Vec<Value>) -> Self {
+    pub fn in_<T: Into<Value> + Clone>(mut self, key: &str, values: Vec<T>) -> Self {
+        let values: Vec<Value> = values.into_iter().map(|v| v.into()).collect();
+        let key = key.to_string(); // Convert &str to String
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
+            if let Some(val) = doc.get(&key) {
                 values.iter().any(|v| v == val)
             } else {
                 false
@@ -185,139 +143,71 @@ impl<'a> QueryBuilder<'a> {
         }));
         self
     }
-
-    pub fn eq(mut self, key: &'a str, value: &'a str) -> Self {
+    pub fn eq<T: Into<Value>>(mut self, key: &str, value: T) -> Self {
+        let value = value.into();
+        let key = key.to_string();
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                match val {
-                    Value::Number(n) => {
-                        if let Ok(compare_val) = value.parse::<f64>() {
-                            return n.as_f64().unwrap() == compare_val;
-                        }
-                    },
-                    Value::String(s) => return s == value,
-                    _ => return false,
-                }
-            }
-            false
+            doc.get(&key).map_or(false, |val| val == &value)
+        }));
+        self
+    }
+    
+    pub fn neq<T: Into<Value>>(mut self, key: &str, value: T) -> Self {
+        let value = value.into();
+        let key = key.to_string();
+        self.filters.push(Box::new(move |doc| {
+            doc.get(&key).map_or(true, |val| val != &value)
         }));
         self
     }
 
-    pub fn neq(mut self, key: &'a str, value: &'a str) -> Self {
-        self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                match val {
-                    Value::Number(n) => {
-                        if let Ok(compare_val) = value.parse::<f64>() {
-                            return n.as_f64().unwrap() != compare_val;
-                        }
-                    },
-                    Value::String(s) => return s != value,
-                    _ => return true,
-                }
-            }
-            true
-        }));
-        self
-    }
-
-    pub fn gte<T: Into<f64> + Copy>(mut self, key: &'a str, value: T) -> Self {
+    pub fn gte<T: Into<f64>>(mut self, key: &str, value: T) -> Self {
         let value_f64: f64 = value.into();
+        let key = key.to_string();
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_val) = val.as_f64() {
-                    return doc_val >= value_f64;
-                }
-            }
-            false
+            doc.get(&key)
+                .and_then(|val| val.as_f64())
+                .map_or(false, |doc_val| doc_val >= value_f64)
         }));
         self
     }
 
-    pub fn gt<T: Into<f64> + Copy>(mut self, key: &'a str, value: T) -> Self {
+    pub fn gt<T: Into<f64>>(mut self, key: &str, value: T) -> Self {
         let value_f64: f64 = value.into();
+        let key = key.to_string();
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_val) = val.as_f64() {
-                    return doc_val > value_f64;
-                }
-            }
-            false
+            doc.get(&key)
+                .and_then(|val| val.as_f64())
+                .map_or(false, |doc_val| doc_val > value_f64)
         }));
         self
     }
 
-    pub fn lte<T: Into<f64> + Copy>(mut self, key: &'a str, value: T) -> Self {
+    pub fn lte<T: Into<f64>>(mut self, key: &str, value: T) -> Self {
         let value_f64: f64 = value.into();
+        let key = key.to_string();
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_val) = val.as_f64() {
-                    return doc_val <= value_f64;
-                }
-            }
-            false
+            doc.get(&key)
+                .and_then(|val| val.as_f64())
+                .map_or(false, |doc_val| doc_val <= value_f64)
         }));
         self
     }
 
-    pub fn lt<T: Into<f64> + Copy>(mut self, key: &'a str, value: T) -> Self {
+    pub fn lt<T: Into<f64>>(mut self, key: &str, value: T) -> Self {
         let value_f64: f64 = value.into();
+        let key = key.to_string();
         self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_val) = val.as_f64() {
-                    return doc_val < value_f64;
-                }
-            }
-            false
+            doc.get(&key)
+                .and_then(|val| val.as_f64())
+                .map_or(false, |doc_val| doc_val < value_f64)
         }));
         self
     }
 
-     pub fn in_values(mut self, key: &'a str, values: Vec<Value>) -> Self {
-        self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                values.contains(val)
-            } else {
-                false
-            }
-        }));
-        self
-    }
-
-    pub fn in_strings(mut self, key: &'a str, values: Vec<String>) -> Self {
-        self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_str) = val.as_str() {
-                    values.contains(&doc_str.to_string())
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }));
-        self
-    }
-
-    pub fn in_numbers(mut self, key: &'a str, values: Vec<f64>) -> Self {
-        self.filters.push(Box::new(move |doc| {
-            if let Some(val) = doc.get(key) {
-                if let Some(doc_num) = val.as_f64() {
-                    values.contains(&doc_num)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }));
-        self
-    }
-   
     pub fn on_success<F>(mut self, callback: F) -> Self
     where
-        F: Fn(&Vec<Value>) + 'static,
+        F: Fn(&Vec<Value>) + Send + Sync + 'static,
     {
         self.success_callback = Some(Box::new(callback));
         self
@@ -325,7 +215,7 @@ impl<'a> QueryBuilder<'a> {
 
     pub fn on_fail<F>(mut self, callback: F) -> Self
     where
-        F: Fn(&String) + 'static,
+        F: Fn(&String) + Send + Sync + 'static,
     {
         self.error_callback = Some(Box::new(callback));
         self
@@ -333,35 +223,40 @@ impl<'a> QueryBuilder<'a> {
 
     pub fn map<F>(mut self, mapper: F) -> Self
     where
-        F: Fn(&mut Value) + 'a,
+        F: Fn(&mut Value) + Send + Sync + 'static,
     {
-        // Add the mapper function to a list of mappers that will modify the documents later
         self.filters.push(Box::new(move |doc: &Value| {
-            let mut mutable_doc = doc.clone();  // Clone the document for safe mutation
-            mapper(&mut mutable_doc);           // Apply the mapper function to the cloned document
-            true  // The filter function returns true to indicate that we keep the document
+            let mut mutable_doc = doc.clone();
+            mapper(&mut mutable_doc);
+            true
         }));
         self
     }
 
     pub fn filter<F>(mut self, filter: F) -> Self
     where
-        F: Fn(&Value) -> bool + 'a,
+        F: Fn(&Value) -> bool + Send + Sync + 'static,
     {
         self.filters.push(Box::new(filter));
         self
     }
 
-    pub fn join<F>(mut self, src_key: &'a str, target_key: &'a str, target_collection: &'a Collection, join_builder: F) -> Self
+    pub fn join<F>(mut self, src_key: &str, target_key: &str, target_collection: Arc<Collection>, join_builder: F) -> Self
     where
-        F: Fn(&'a Collection, &'a Collection) -> JoinBuilder<'a> + 'a,
+        F: Fn(Arc<Collection>, Arc<Collection>) -> JoinBuilder + Send + Sync + 'static,
     {
-        let join_function = Box::new(move |_: String, _: String, _: Collection, _: &Collection, _: Filter| {
-            let builder = join_builder(self.collection, target_collection);
-            builder.on(src_key, target_key).execute()
+        let join_function = Box::new(move |s: String, t: String, src: Arc<Collection>, target: Arc<Collection>, _: Filter| {
+            let builder = join_builder(Arc::clone(&src), Arc::clone(&target));
+            builder.on(&s, &t).execute()
         });
 
-        self.joins.push((src_key.to_string(), target_key.to_string(), self.collection, target_collection, join_function));
+        self.joins.push((
+            src_key.to_string(),
+            target_key.to_string(),
+            Arc::clone(&self.collection),
+            Arc::clone(&target_collection),
+            join_function
+        ));
         self
     }
 
@@ -374,9 +269,14 @@ impl<'a> QueryBuilder<'a> {
             if self.filters.iter().all(|filter| filter(&doc_value)) {
                 let mut joined_docs = vec![doc_value];
                 for (src_key, target_key, src_collection, target_collection, join_function) in &self.joins {
-                    let new_joined_docs = join_function((*src_key).clone(), (*target_key).clone(), (*src_collection).clone(), target_collection, Box::new(|_| true));
+                    let new_joined_docs = join_function(
+                        src_key.to_string(),
+                        target_key.to_string(),
+                        Arc::clone(src_collection),
+                        Arc::clone(target_collection),
+                        Box::new(|_| true)
+                    );
                     
-                    // Combine the joined documents with existing results
                     joined_docs = joined_docs.into_iter().flat_map(|existing_doc| {
                         if new_joined_docs.is_empty() {
                             vec![existing_doc]
@@ -392,7 +292,6 @@ impl<'a> QueryBuilder<'a> {
                     }).collect();
                 }
 
-                // Apply field selection
                 if !self.selected_fields.is_empty() {
                     joined_docs = joined_docs.into_iter().map(|doc| {
                         let mut selected_doc = json!({});
